@@ -1,4 +1,4 @@
-module github.com/OffchainLabs/hashtree
+module github.com/SilaLabs/hashtree
 
 go 1.22.2
 
