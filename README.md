@@ -175,27 +175,27 @@ The library exposes several architecture dependent SHA implementations. It is th
 Most vectorized implementations exploit the fact that independent branches in the Merkle tree can be hashed in "parallel" within one CPU, to take advantage of this, 
 Merkleization algorithms that loop over consecutive tree layers hashing two blocks at a time need to be updated to pass the entire layer, or all consecutive blocks. A naive example on how to accomplish this can be found in [this document](https://hackmd.io/80mJ75A5QeeRcrNmqcuU-g?view)
 
-Some examples benchmarks running the algorithms in this library vs prysm's current implementation are
+Some examples benchmarks running the algorithms in this library vs Sila's current implementation are
 ```
 goos: linux
 goarch: amd64
 cpu: AMD Ryzen 5 3600 6-Core Processor
 BenchmarkHashBalanceShani-12                  160       7629704 ns/op
-BenchmarkHashBalanceShaniPrysm-12              15      74012328 ns/op
+BenchmarkHashBalanceShaniSila-12              15      74012328 ns/op
 PASS
 
 goos: linux
 goarch: amd64
 cpu: Intel(R) Core(TM) i5-3570 CPU @ 3.40GHz
 BenchmarkHashBalanceAVX-4               68      26677965 ns/op
-BenchmarkHashBalancePrysm-4              7     165434686 ns/op
+BenchmarkHashBalanceSila-4              7     165434686 ns/op
 PASS
 
 goos: linux
 goarch: amd64
 cpu: Intel(R) Core(TM) i5-7200U CPU @ 2.50GHz
 BenchmarkHashBalanceAVX2-4             121       9711482 ns/op
-BenchmarkHashBalancePrysm-4             10     103716714 ns/op
+BenchmarkHashBalanceSila-4             10     103716714 ns/op
 PASS
 ```
 
