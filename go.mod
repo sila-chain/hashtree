@@ -1,4 +1,4 @@
-module github.com/SilaLabs/hashtree
+module github.com/sila-chain/hashtree
 
 go 1.22.2
 

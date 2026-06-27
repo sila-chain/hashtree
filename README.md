@@ -186,13 +186,13 @@ PASS
 The library offers low-level bindings for Nim that can be installed using:
 
 ```sh
-nimble install https://github.com/SilaLabs/hashtree/
+nimble install https://github.com/sila-chain/hashtree/
 ```
 
 or used in a package with:
 
 ```nim
-requires "https://github.com/SilaLabs/hashtree/"
+requires "https://github.com/sila-chain/hashtree/"
 ```
 
 ## Rust bindings
