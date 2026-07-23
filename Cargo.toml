@@ -1,0 +1,23 @@
+[package]
+name = "sila_hashtree"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+hashtree-rs = { path = "hashtree" }
+napi = { version = "3.1.3", default-features = true, features = [
+    # supports node v12.22.0+, v14.17.0+, v15.12.0+, 16.0.0 and all later versions
+    "napi8"
+] }
+napi-derive = { version = "3.1.1", default-features = true }
+
+[build-dependencies]
+napi-build = "2.2.3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"

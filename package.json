@@ -63,13 +63,5 @@
     "url": "https://github.com/sila-chain/hashtree/issues"
   },
   "homepage": "https://github.com/sila-chain/hashtree#readme",
-  "packageManager": "yarn@4.9.2",
-  "optionalDependencies": {
-    "@sila-chain/hashtree-darwin-arm64": "1.0.2",
-    "@sila-chain/hashtree-linux-x64-gnu": "1.0.2",
-    "@sila-chain/hashtree-linux-arm64-gnu": "1.0.2",
-    "@sila-chain/hashtree-linux-x64-musl": "1.0.2",
-    "@sila-chain/hashtree-linux-arm64-musl": "1.0.2",
-    "@sila-chain/hashtree-win32-x64-msvc": "1.0.2"
-  }
+  "packageManager": "yarn@4.9.2"
 }

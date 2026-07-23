@@ -1,0 +1,35 @@
+{
+  "name": "@sila-chain/hashtree-darwin-arm64",
+  "version": "1.0.2",
+  "cpu": [
+    "arm64"
+  ],
+  "main": "hashtree.darwin-arm64.node",
+  "files": [
+    "hashtree.darwin-arm64.node"
+  ],
+  "keywords": [
+    "hash",
+    "hashtree",
+    "merkle",
+    "NAPI",
+    "N-API",
+    "sha256"
+  ],
+  "author": "Sila.io",
+  "homepage": "https://github.com/sila-chain/hashtree#readme",
+  "license": "MIT",
+  "engines": {
+    "node": ">= 18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sila-chain/hashtree.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sila-chain/hashtree/issues"
+  },
+  "os": [
+    "darwin"
+  ]
+}

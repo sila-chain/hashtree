@@ -1,0 +1,318 @@
+name: Sila native platform verification
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches:
+      - "sila/ci-hashtree-1.0.2-repacked-20260723_183242"
+
+concurrency:
+  group: sila-native-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "24.18.0"
+  YARN_VERSION: "4.9.2"
+  RUST_VERSION: "1.97.1"
+  ZIG_VERSION: "0.16.0"
+  ZIG_X64_URL: "https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz"
+  ZIG_X64_SHA256: "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
+  ZIG_ARM64_URL: "https://ziglang.org/download/0.16.0/zig-aarch64-linux-0.16.0.tar.xz"
+  ZIG_ARM64_SHA256: "ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17"
+  CARGO_ZIGBUILD_VERSION: "0.23.0"
+
+jobs:
+  native-build-test:
+    name: ${{ matrix.target }}
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            artifact: hashtree.linux-x64-gnu.node
+            family: linux
+            libc: gnu
+            docker_platform: linux/amd64
+
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            artifact: hashtree.linux-x64-musl.node
+            family: linux
+            libc: musl
+            docker_platform: linux/amd64
+
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact: hashtree.linux-arm64-gnu.node
+            family: linux
+            libc: gnu
+            docker_platform: linux/arm64
+
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            artifact: hashtree.linux-arm64-musl.node
+            family: linux
+            libc: musl
+            docker_platform: linux/arm64
+
+          - runner: macos-26
+            target: aarch64-apple-darwin
+            artifact: hashtree.darwin-arm64.node
+            family: darwin
+            libc: none
+            docker_platform: none
+
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            artifact: hashtree.win32-x64-msvc.node
+            family: windows
+            libc: none
+            docker_platform: none
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Setup exact Node
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: "24.18.0"
+          check-latest: false
+          package-manager-cache: false
+
+      - name: Runner identity
+        shell: bash
+        run: |
+          echo "runner_os=$RUNNER_OS"
+          echo "runner_arch=$(uname -m)"
+          echo "target=${{ matrix.target }}"
+          echo "artifact=${{ matrix.artifact }}"
+          node --version
+          corepack --version
+
+      - name: Setup exact Yarn
+        shell: bash
+        run: |
+          corepack enable
+          corepack yarn --version
+          test "$(corepack yarn --version)" = "$YARN_VERSION"
+
+      - name: Setup exact Rust
+        shell: bash
+        run: |
+          rustup toolchain install \
+            "$RUST_VERSION" \
+            --profile minimal \
+            --component rustfmt \
+            --component clippy \
+            --target "${{ matrix.target }}"
+
+          rustc +"$RUST_VERSION" --version
+          cargo +"$RUST_VERSION" --version
+
+      - name: Setup latest stable Zig and cargo-zigbuild
+        if: matrix.libc == 'musl'
+        shell: bash
+        run: |
+          case "$(uname -m)" in
+            x86_64|amd64)
+              ZIG_URL="$ZIG_X64_URL"
+              ZIG_SHA256="$ZIG_X64_SHA256"
+              ;;
+            aarch64|arm64)
+              ZIG_URL="$ZIG_ARM64_URL"
+              ZIG_SHA256="$ZIG_ARM64_SHA256"
+              ;;
+            *)
+              echo "unsupported_native_arch=$(uname -m)"
+              false
+              ;;
+          esac
+
+          curl -fsSL "$ZIG_URL" -o zig.tar.xz
+          printf '%s  %s\n' "$ZIG_SHA256" zig.tar.xz |
+            sha256sum -c -
+
+          mkdir -p zig-tool
+          tar -xf zig.tar.xz -C zig-tool --strip-components=1
+
+          echo "$PWD/zig-tool" >> "$GITHUB_PATH"
+
+          cargo +"$RUST_VERSION" install \
+            cargo-zigbuild \
+            --version "=$CARGO_ZIGBUILD_VERSION" \
+            --locked
+
+      - name: Immutable dependency install
+        shell: bash
+        run: |
+          corepack yarn install --immutable
+
+      - name: Package version audit
+        shell: bash
+        run: |
+          corepack yarn check-package-versions
+
+      - name: Source quality gates
+        shell: bash
+        run: |
+          corepack yarn lint
+          cargo +"$RUST_VERSION" fmt -- --check
+          cargo +"$RUST_VERSION" clippy --locked
+
+      - name: Build native artifact
+        shell: bash
+        run: |
+          rm -f "${{ matrix.artifact }}"
+
+          if [ "${{ matrix.libc }}" = "musl" ]; then
+            RUSTUP_TOOLCHAIN="$RUST_VERSION" \
+              corepack yarn build \
+                --target "${{ matrix.target }}" \
+                -x
+          else
+            RUSTUP_TOOLCHAIN="$RUST_VERSION" \
+              corepack yarn build \
+                --target "${{ matrix.target }}"
+          fi
+
+          test -f "${{ matrix.artifact }}"
+
+      - name: Direct native tests
+        if: matrix.libc != 'musl'
+        shell: bash
+        run: |
+          corepack yarn test
+
+          node <<'NODE'
+          const crypto = require("node:crypto");
+          const binding = require("./index.js");
+          const keys = Object.keys(binding).sort();
+
+          console.log(`exports=${keys.join(",")}`);
+
+          const input = Buffer.alloc(64);
+
+          for (let i = 0; i < input.length; i += 1) {
+            input[i] = i;
+          }
+
+          const expected = crypto
+            .createHash("sha256")
+            .update(input)
+            .digest();
+
+          const actual = Buffer.from(binding.hash(input));
+          const output = Buffer.alloc(32);
+
+          binding.hashInto(input, output);
+
+          if (
+            !keys.includes("hash") ||
+            !keys.includes("hashInto") ||
+            !actual.equals(expected) ||
+            !output.equals(expected)
+          ) {
+            process.exitCode = 1;
+          }
+          NODE
+
+      - name: Native musl tests inside Alpine
+        if: matrix.libc == 'musl'
+        shell: bash
+        run: |
+          docker run \
+            --rm \
+            --platform "${{ matrix.docker_platform }}" \
+            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+            -w "$GITHUB_WORKSPACE" \
+            "node:$NODE_VERSION-alpine" \
+            sh -lc '
+              corepack enable &&
+              corepack yarn install --immutable &&
+              corepack yarn test &&
+              node -e "
+                const crypto = require(\"node:crypto\");
+                const binding = require(\"./index.js\");
+                const keys = Object.keys(binding).sort();
+
+                const input = Buffer.alloc(64);
+
+                for (
+                  let i = 0;
+                  i < input.length;
+                  i += 1
+                ) {
+                  input[i] = i;
+                }
+
+                const expected = crypto
+                  .createHash(\"sha256\")
+                  .update(input)
+                  .digest();
+
+                const actual = Buffer.from(
+                  binding.hash(input)
+                );
+
+                const output = Buffer.alloc(32);
+                binding.hashInto(input, output);
+
+                console.log(
+                  \"exports=\" + keys.join(\",\")
+                );
+
+                if (
+                  !keys.includes(\"hash\") ||
+                  !keys.includes(\"hashInto\") ||
+                  !actual.equals(expected) ||
+                  !output.equals(expected)
+                ) {
+                  process.exitCode = 1;
+                }
+              "
+            '
+
+      - name: Artifact proof
+        shell: bash
+        run: |
+          test -f "${{ matrix.artifact }}"
+
+          {
+            echo "runner_os=$RUNNER_OS"
+            echo "runner_arch=$(uname -m)"
+            echo "runner_name=$RUNNER_NAME"
+            echo "target=${{ matrix.target }}"
+            echo "artifact=${{ matrix.artifact }}"
+            echo "node_version=$(node --version)"
+            echo "yarn_version=$(corepack yarn --version)"
+            echo "rust_version=$(rustc +$RUST_VERSION --version)"
+            echo "zig_version=$ZIG_VERSION"
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "${{ matrix.artifact }}"
+            else
+              shasum -a 256 "${{ matrix.artifact }}"
+            fi
+          } > "ci-proof-${{ matrix.target }}.txt"
+
+          cat "ci-proof-${{ matrix.target }}.txt"
+
+      - name: Upload native artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: binding-${{ matrix.target }}
+          path: |
+            ${{ matrix.artifact }}
+            ci-proof-${{ matrix.target }}.txt
+          if-no-files-found: error
+          retention-days: 1
