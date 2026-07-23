@@ -327,3 +327,5 @@ jobs:
             source-manifest.tsv
           if-no-files-found: error
           retention-days: 7
+
+# sila-ci-trigger: 20260723T113940Z
