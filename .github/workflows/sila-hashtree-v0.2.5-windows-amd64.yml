@@ -1,0 +1,578 @@
+name: Sila hashtree v0.2.5 Windows amd64
+
+on:
+  push:
+    branches:
+      - 'sila/hashtree-v0.2.5-syso-build-20260723'
+    paths:
+      - '.github/workflows/sila-hashtree-v0.2.5-windows-amd64.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-amd64:
+    name: Build Windows amd64
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout exact official source
+        uses: actions/checkout@v6.0.2
+        with:
+          repository: OffchainLabs/hashtree
+          ref: 30497cff98a06362eadde897202634f91d504fd8
+          path: official-source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify exact official commit
+        shell: bash
+        run: |
+          actual="$(git -C official-source rev-parse HEAD)"
+          expected="30497cff98a06362eadde897202634f91d504fd8"
+          printf 'actual_commit=%s\nexpected_commit=%s\n' "$actual" "$expected"
+          test "$actual" = "$expected"
+
+      - name: Prepare source-only workspace
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import os
+          import shutil
+          from pathlib import Path
+
+          source = Path("official-source")
+          build = Path("build")
+
+          build.mkdir(
+              parents=True,
+              exist_ok=False,
+          )
+
+          records = []
+
+          for path in sorted(
+              source.rglob("*"),
+              key=lambda item: item.as_posix(),
+          ):
+              relative = path.relative_to(
+                  source
+              )
+
+              if ".git" in relative.parts:
+                  continue
+
+              if path.name.endswith(
+                  ".syso"
+              ):
+                  continue
+
+              target = build / relative
+
+              if path.is_symlink():
+                  target.parent.mkdir(
+                      parents=True,
+                      exist_ok=True,
+                  )
+
+                  os.symlink(
+                      os.readlink(path),
+                      target,
+                  )
+
+              elif path.is_dir():
+                  target.mkdir(
+                      parents=True,
+                      exist_ok=True,
+                  )
+
+              elif path.is_file():
+                  target.parent.mkdir(
+                      parents=True,
+                      exist_ok=True,
+                  )
+
+                  shutil.copy2(
+                      path,
+                      target,
+                      follow_symlinks=False,
+                  )
+
+          for path in sorted(
+              build.rglob("*"),
+              key=lambda item: item.as_posix(),
+          ):
+              if not path.is_file():
+                  continue
+
+              data = path.read_bytes()
+
+              records.append(
+                  (
+                      path.relative_to(
+                          build
+                      ).as_posix(),
+                      len(data),
+                      hashlib.sha256(
+                          data
+                      ).hexdigest(),
+                  )
+              )
+
+          prebuilt = list(
+              build.rglob("*.syso")
+          )
+
+          Path(
+              "source-manifest.tsv"
+          ).write_text(
+              "path\tsize\tsha256\n"
+              + "\n".join(
+                  "\t".join(
+                      (
+                          path,
+                          str(size),
+                          digest,
+                      )
+                  )
+                  for path, size, digest
+                  in records
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+
+          print(
+              f"source_entry_count={len(records)}"
+          )
+
+          print(
+              f"prebuilt_syso_count={len(prebuilt)}"
+          )
+
+          if prebuilt:
+              raise SystemExit(
+                  "PREBUILT_SYSO_FOUND"
+              )
+          PY
+
+      - name: Setup official Go toolchain
+        uses: actions/setup-go@v6.4.0
+        with:
+          go-version: '1.22.x'
+          cache: false
+
+      - name: Verify Windows amd64 runner
+        shell: bash
+        run: |
+          printf 'runner_os=%s\nrunner_arch=%s\nuname=%s\n' \
+            "$RUNNER_OS" \
+            "$RUNNER_ARCH" \
+            "$(uname -m)"
+
+          test "$RUNNER_OS" = "Windows"
+
+          case "$(uname -m)" in
+            x86_64|amd64)
+              ;;
+            *)
+              false
+              ;;
+          esac
+
+          command -v gcc
+          command -v make
+          command -v ar
+          command -v nm
+          command -v cygpath
+
+      - name: Build Windows artifact with protected Sila path mapping
+        shell: bash
+        run: |
+          cd build
+
+          POSIX_ROOT="$(pwd -P)"
+          WINDOWS_ROOT="$(cygpath -m "$POSIX_ROOT")"
+
+          cat >src/sila-gcc-wrapper <<EOF
+          #!/usr/bin/env bash
+          export MSYS2_ARG_CONV_EXCL='*'
+          export MSYS_NO_PATHCONV=1
+
+          exec gcc \
+            "-ffile-prefix-map=$WINDOWS_ROOT=/sila/hashtree" \
+            "-fdebug-prefix-map=$WINDOWS_ROOT=/sila/hashtree" \
+            "-fmacro-prefix-map=$WINDOWS_ROOT=/sila/hashtree" \
+            "-ffile-prefix-map=$POSIX_ROOT=/sila/hashtree" \
+            "-fdebug-prefix-map=$POSIX_ROOT=/sila/hashtree" \
+            "-fmacro-prefix-map=$POSIX_ROOT=/sila/hashtree" \
+            "\$@"
+          EOF
+
+          chmod 0755 \
+            src/sila-gcc-wrapper
+
+          printf 'posix_root=%s\n' \
+            "$POSIX_ROOT"
+
+          printf 'windows_root=%s\n' \
+            "$WINDOWS_ROOT"
+
+          export MSYS2_ARG_CONV_EXCL='*'
+          export MSYS_NO_PATHCONV=1
+
+          CC="./sila-gcc-wrapper" \
+            make go_bindings
+
+          test -s hashtree.syso
+
+          mv -f \
+            hashtree.syso \
+            hashtree_windows_amd64.syso
+
+          test -s \
+            hashtree_windows_amd64.syso
+
+      - name: Run native Windows Go tests
+        shell: bash
+        run: |
+          cd build
+
+          CGO_ENABLED=0 \
+            go test \
+              -count=1 \
+              .
+
+      - name: Audit Windows artifact
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          generated = Path(
+              "build/hashtree_windows_amd64.syso"
+          )
+
+          official = Path(
+              "official-source/hashtree_windows_amd64.syso"
+          )
+
+          def run(*args):
+              return subprocess.run(
+                  args,
+                  text=True,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.PIPE,
+                  check=False,
+              )
+
+          def members(path):
+              result = run(
+                  "ar",
+                  "t",
+                  str(path),
+              )
+
+              if result.returncode != 0:
+                  raise SystemExit(
+                      "AR_READ_FAILED:"
+                      + result.stderr
+                  )
+
+              return [
+                  line.strip()
+                  for line
+                  in result.stdout.splitlines()
+                  if line.strip()
+              ]
+
+          def symbols(path):
+              result = run(
+                  "nm",
+                  "-g",
+                  str(path),
+              )
+
+              if result.returncode != 0:
+                  raise SystemExit(
+                      "NM_READ_FAILED:"
+                      + result.stderr
+                  )
+
+              found = set()
+
+              for match in re.finditer(
+                  r"\b_?(hashtree_[A-Za-z0-9_]+)\b",
+                  result.stdout,
+              ):
+                  found.add(
+                      match.group(1)
+                  )
+
+              return sorted(found)
+
+          if not generated.is_file():
+              raise SystemExit(
+                  "GENERATED_ARTIFACT_MISSING"
+              )
+
+          if not official.is_file():
+              raise SystemExit(
+                  "OFFICIAL_ARTIFACT_MISSING"
+              )
+
+          data = generated.read_bytes()
+
+          generated_members = members(
+              generated
+          )
+
+          official_members = members(
+              official
+          )
+
+          generated_symbols = symbols(
+              generated
+          )
+
+          official_symbols = symbols(
+              official
+          )
+
+          missing_members = sorted(
+              set(official_members)
+              - set(generated_members)
+          )
+
+          extra_members = sorted(
+              set(generated_members)
+              - set(official_members)
+          )
+
+          missing_symbols = sorted(
+              set(official_symbols)
+              - set(generated_symbols)
+          )
+
+          extra_symbols = sorted(
+              set(generated_symbols)
+              - set(official_symbols)
+          )
+
+          required_symbols = {
+              "hashtree_hash",
+              "hashtree_init",
+          }
+
+          missing_required = sorted(
+              required_symbols
+              - set(generated_symbols)
+          )
+
+          forbidden_values = {
+              "github_workspace": (
+                  os.environ.get(
+                      "GITHUB_WORKSPACE",
+                      ""
+                  ).encode()
+              ),
+              "windows_runner_slash": (
+                  b"D:/a/"
+              ),
+              "windows_runner_backslash": (
+                  b"D:\\a\\"
+              ),
+              "msys_runner": (
+                  b"/d/a/"
+              ),
+              "linux_runner": (
+                  b"/home/runner/work/"
+              ),
+              "mac_runner": (
+                  b"/Users/runner/work/"
+              ),
+          }
+
+          forbidden_counts = {
+              name: (
+                  data.count(value)
+                  if value
+                  else 0
+              )
+              for name, value
+              in forbidden_values.items()
+          }
+
+          workspace_path_leak_count = sum(
+              forbidden_counts.values()
+          )
+
+          identity_patterns = {
+              "Ethereum": rb"\bEthereum\b",
+              "ethereum": rb"\bethereum\b",
+              "ETHEREUM": rb"\bETHEREUM\b",
+              "EIP": rb"\bEIPs?\b",
+              "eip": rb"\beips?\b",
+              "ERC": rb"\bERCs?\b",
+              "erc": rb"\bercs?\b",
+          }
+
+          identity_counts = {
+              name: len(
+                  re.findall(
+                      pattern,
+                      data,
+                  )
+              )
+              for name, pattern
+              in identity_patterns.items()
+          }
+
+          ethereum_identity_total = sum(
+              identity_counts.values()
+          )
+
+          sila_prefix_count = data.count(
+              b"/sila/hashtree"
+          )
+
+          audit = {
+              "platform": (
+                  "windows_amd64"
+              ),
+              "artifact": (
+                  "hashtree_windows_amd64.syso"
+              ),
+              "generated_size": (
+                  generated.stat().st_size
+              ),
+              "generated_sha256": (
+                  hashlib.sha256(
+                      data
+                  ).hexdigest()
+              ),
+              "official_sha256": (
+                  hashlib.sha256(
+                      official.read_bytes()
+                  ).hexdigest()
+              ),
+              "sila_prefix_count": (
+                  sila_prefix_count
+              ),
+              "workspace_path_leak_count": (
+                  workspace_path_leak_count
+              ),
+              "forbidden_path_counts": (
+                  forbidden_counts
+              ),
+              "ethereum_identity_total": (
+                  ethereum_identity_total
+              ),
+              "ethereum_identity_counts": (
+                  identity_counts
+              ),
+              "generated_member_count": len(
+                  generated_members
+              ),
+              "official_member_count": len(
+                  official_members
+              ),
+              "missing_official_members": (
+                  missing_members
+              ),
+              "extra_generated_members": (
+                  extra_members
+              ),
+              "generated_symbol_count": len(
+                  generated_symbols
+              ),
+              "official_symbol_count": len(
+                  official_symbols
+              ),
+              "missing_official_symbols": (
+                  missing_symbols
+              ),
+              "extra_generated_symbols": (
+                  extra_symbols
+              ),
+              "missing_required_symbols": (
+                  missing_required
+              ),
+              "manual_generated_file_edit": False,
+              "binary_patch": False,
+          }
+
+          Path(
+              "artifact-audit.json"
+          ).write_text(
+              json.dumps(
+                  audit,
+                  indent=2,
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+
+          print(
+              json.dumps(
+                  audit,
+                  indent=2,
+              )
+          )
+
+          failures = []
+
+          if sila_prefix_count <= 0:
+              failures.append(
+                  "SILA_PREFIX_MISSING"
+              )
+
+          if workspace_path_leak_count != 0:
+              failures.append(
+                  "WORKSPACE_PATH_LEAK"
+              )
+
+          if ethereum_identity_total != 0:
+              failures.append(
+                  "ETHEREUM_IDENTITY_PRESENT"
+              )
+
+          if missing_members:
+              failures.append(
+                  "OFFICIAL_MEMBERS_MISSING"
+              )
+
+          if missing_symbols:
+              failures.append(
+                  "OFFICIAL_SYMBOLS_MISSING"
+              )
+
+          if missing_required:
+              failures.append(
+                  "REQUIRED_SYMBOLS_MISSING"
+              )
+
+          if failures:
+              raise SystemExit(
+                  ",".join(failures)
+              )
+          PY
+
+      - name: Upload generated Windows artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: hashtree_windows_amd64.syso
+          path: |
+            build/hashtree_windows_amd64.syso
+            artifact-audit.json
+            source-manifest.tsv
+          if-no-files-found: error
+          retention-days: 7
