@@ -1,4 +1,4 @@
-name: Sila hashtree v0.2.5 Windows amd64
+name: Sila hashtree v0.2.5 Windows amd64 response-file build
 
 on:
   push:
@@ -32,7 +32,10 @@ jobs:
         run: |
           actual="$(git -C official-source rev-parse HEAD)"
           expected="30497cff98a06362eadde897202634f91d504fd8"
-          printf 'actual_commit=%s\nexpected_commit=%s\n' "$actual" "$expected"
+
+          printf 'actual_commit=%s\n' "$actual"
+          printf 'expected_commit=%s\n' "$expected"
+
           test "$actual" = "$expected"
 
       - name: Prepare source-only workspace
@@ -165,13 +168,12 @@ jobs:
           go-version: '1.22.x'
           cache: false
 
-      - name: Verify Windows amd64 runner
+      - name: Verify Windows amd64 build environment
         shell: bash
         run: |
-          printf 'runner_os=%s\nrunner_arch=%s\nuname=%s\n' \
-            "$RUNNER_OS" \
-            "$RUNNER_ARCH" \
-            "$(uname -m)"
+          printf 'runner_os=%s\n' "$RUNNER_OS"
+          printf 'runner_arch=%s\n' "$RUNNER_ARCH"
+          printf 'uname=%s\n' "$(uname -m)"
 
           test "$RUNNER_OS" = "Windows"
 
@@ -183,13 +185,14 @@ jobs:
               ;;
           esac
 
-          command -v gcc
-          command -v make
-          command -v ar
-          command -v nm
-          command -v cygpath
+          gcc --version
+          make --version
+          ar --version
+          nm --version
+          go version
+          cygpath --version
 
-      - name: Build Windows artifact with protected Sila path mapping
+      - name: Build Windows artifact using GCC response file
         shell: bash
         run: |
           cd build
@@ -197,34 +200,26 @@ jobs:
           POSIX_ROOT="$(pwd -P)"
           WINDOWS_ROOT="$(cygpath -m "$POSIX_ROOT")"
 
-          cat >src/sila-gcc-wrapper <<EOF
-          #!/usr/bin/env bash
-          export MSYS2_ARG_CONV_EXCL='*'
-          export MSYS_NO_PATHCONV=1
-
-          exec gcc \
-            "-ffile-prefix-map=$WINDOWS_ROOT=/sila/hashtree" \
-            "-fdebug-prefix-map=$WINDOWS_ROOT=/sila/hashtree" \
-            "-fmacro-prefix-map=$WINDOWS_ROOT=/sila/hashtree" \
-            "-ffile-prefix-map=$POSIX_ROOT=/sila/hashtree" \
-            "-fdebug-prefix-map=$POSIX_ROOT=/sila/hashtree" \
-            "-fmacro-prefix-map=$POSIX_ROOT=/sila/hashtree" \
-            "\$@"
+          cat >src/sila-prefix-map.rsp <<EOF
+          -ffile-prefix-map=$WINDOWS_ROOT=/sila/hashtree
+          -fdebug-prefix-map=$WINDOWS_ROOT=/sila/hashtree
+          -fmacro-prefix-map=$WINDOWS_ROOT=/sila/hashtree
+          -ffile-prefix-map=$POSIX_ROOT=/sila/hashtree
+          -fdebug-prefix-map=$POSIX_ROOT=/sila/hashtree
+          -fmacro-prefix-map=$POSIX_ROOT=/sila/hashtree
           EOF
 
-          chmod 0755 \
-            src/sila-gcc-wrapper
+          printf 'posix_root=%s\n' "$POSIX_ROOT"
+          printf 'windows_root=%s\n' "$WINDOWS_ROOT"
 
-          printf 'posix_root=%s\n' \
-            "$POSIX_ROOT"
-
-          printf 'windows_root=%s\n' \
-            "$WINDOWS_ROOT"
+          echo "=== GCC RESPONSE FILE ==="
+          cat src/sila-prefix-map.rsp
 
           export MSYS2_ARG_CONV_EXCL='*'
           export MSYS_NO_PATHCONV=1
 
-          CC="./sila-gcc-wrapper" \
+          CFLAGS="@sila-prefix-map.rsp" \
+          ASFLAGS="@sila-prefix-map.rsp" \
             make go_bindings
 
           test -s hashtree.syso
@@ -319,12 +314,14 @@ jobs:
 
               return sorted(found)
 
-          if not generated.is_file():
+          if not generated.is_file() or \
+             generated.stat().st_size == 0:
               raise SystemExit(
                   "GENERATED_ARTIFACT_MISSING"
               )
 
-          if not official.is_file():
+          if not official.is_file() or \
+             official.stat().st_size == 0:
               raise SystemExit(
                   "OFFICIAL_ARTIFACT_MISSING"
               )
@@ -367,13 +364,13 @@ jobs:
               - set(official_symbols)
           )
 
-          required_symbols = {
+          required = {
               "hashtree_hash",
               "hashtree_init",
           }
 
           missing_required = sorted(
-              required_symbols
+              required
               - set(generated_symbols)
           )
 
@@ -384,13 +381,13 @@ jobs:
                       ""
                   ).encode()
               ),
-              "windows_runner_slash": (
+              "windows_forward": (
                   b"D:/a/"
               ),
-              "windows_runner_backslash": (
+              "windows_backslash": (
                   b"D:\\a\\"
               ),
-              "msys_runner": (
+              "msys_path": (
                   b"/d/a/"
               ),
               "linux_runner": (
