@@ -1,0 +1,329 @@
+name: Sila hashtree v0.2.5 platform artifacts
+
+on:
+  push:
+    branches:
+      - 'sila/hashtree-v0.2.5-syso-build-20260723'
+    paths:
+      - '.github/workflows/sila-hashtree-v0.2.5-syso.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-platform-artifacts:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux arm64
+            platform: linux_arm64
+            runner: ubuntu-latest
+            cc: aarch64-linux-gnu-gcc
+            cross_packages: gcc-aarch64-linux-gnu qemu-user
+            artifact: hashtree_linux_arm64.syso
+            test_mode: qemu_arm64
+          - name: macOS arm64
+            platform: darwin_arm64
+            runner: macos-latest
+            cc: clang
+            cross_packages: ''
+            artifact: hashtree_darwin_arm64.syso
+            test_mode: native
+          - name: Windows amd64
+            platform: windows_amd64
+            runner: windows-latest
+            cc: gcc
+            cross_packages: ''
+            artifact: hashtree_windows_amd64.syso
+            test_mode: native
+          - name: Linux RISC-V 64
+            platform: linux_riscv64
+            runner: ubuntu-latest
+            cc: riscv64-linux-gnu-gcc
+            cross_packages: gcc-riscv64-linux-gnu qemu-user
+            artifact: hashtree_linux_riscv64.syso
+            test_mode: qemu_riscv64
+
+    steps:
+      - name: Checkout exact official source
+        uses: actions/checkout@v4
+        with:
+          repository: OffchainLabs/hashtree
+          ref: 30497cff98a06362eadde897202634f91d504fd8
+          path: official-source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify exact source commit
+        shell: bash
+        run: |
+          set -u
+          actual="$(git -C official-source rev-parse HEAD)"
+          expected="30497cff98a06362eadde897202634f91d504fd8"
+          printf 'actual_commit=%s\nexpected_commit=%s\n' "$actual" "$expected"
+          test "$actual" = "$expected"
+
+      - name: Prepare source-only build workspace
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import os
+          import shutil
+          from pathlib import Path
+
+          src = Path('official-source')
+          dst = Path('build')
+          dst.mkdir(parents=True, exist_ok=False)
+          records = []
+
+          for path in sorted(src.rglob('*'), key=lambda p: p.as_posix()):
+              rel = path.relative_to(src)
+              if '.git' in rel.parts or path.name.endswith('.syso'):
+                  continue
+              out = dst / rel
+              if path.is_symlink():
+                  out.parent.mkdir(parents=True, exist_ok=True)
+                  os.symlink(os.readlink(path), out)
+              elif path.is_dir():
+                  out.mkdir(parents=True, exist_ok=True)
+              elif path.is_file():
+                  out.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copy2(path, out, follow_symlinks=False)
+
+          for path in sorted(dst.rglob('*'), key=lambda p: p.as_posix()):
+              if not path.is_file() or path.is_symlink():
+                  continue
+              data = path.read_bytes()
+              records.append(
+                  f"{path.relative_to(dst).as_posix()}\t{len(data)}\t{hashlib.sha256(data).hexdigest()}"
+              )
+
+          Path('source-manifest.tsv').write_text(
+              'path\tsize\tsha256\n' + '\n'.join(records) + '\n',
+              encoding='utf-8',
+          )
+
+          syso = list(dst.rglob('*.syso'))
+          print(f'source_entry_count={len(records)}')
+          print(f'prebuilt_syso_count={len(syso)}')
+          if syso:
+              raise SystemExit('prebuilt .syso found in build workspace')
+          PY
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.x'
+
+      - name: Install official cross-platform packages
+        if: ${{ matrix.cross_packages != '' }}
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.cross_packages }}
+
+      - name: Verify runner architecture
+        shell: bash
+        run: |
+          set -u
+          printf 'runner_os=%s\nrunner_arch=%s\nuname=%s\n' "$RUNNER_OS" "$RUNNER_ARCH" "$(uname -m)"
+          case "${{ matrix.platform }}" in
+            darwin_arm64)
+              test "$RUNNER_OS" = "macOS"
+              test "$(uname -m)" = "arm64"
+              ;;
+            windows_amd64)
+              test "$RUNNER_OS" = "Windows"
+              case "$(uname -m)" in x86_64|amd64) ;; *) false ;; esac
+              ;;
+            linux_arm64|linux_riscv64)
+              test "$RUNNER_OS" = "Linux"
+              ;;
+          esac
+
+      - name: Build Sila-path artifact
+        shell: bash
+        run: |
+          set -u
+          cd build
+          BUILD_ROOT="$(pwd -P)"
+          MAP_FLAGS="-ffile-prefix-map=$BUILD_ROOT=/sila/hashtree -fdebug-prefix-map=$BUILD_ROOT=/sila/hashtree -fmacro-prefix-map=$BUILD_ROOT=/sila/hashtree"
+
+          if command -v cygpath >/dev/null 2>&1; then
+            BUILD_ROOT_WINDOWS="$(cygpath -m "$BUILD_ROOT")"
+            MAP_FLAGS="$MAP_FLAGS -ffile-prefix-map=$BUILD_ROOT_WINDOWS=/sila/hashtree -fdebug-prefix-map=$BUILD_ROOT_WINDOWS=/sila/hashtree -fmacro-prefix-map=$BUILD_ROOT_WINDOWS=/sila/hashtree"
+          fi
+
+          printf 'compiler=%s\nbuild_root=%s\nmap_flags=%s\n' "${{ matrix.cc }}" "$BUILD_ROOT" "$MAP_FLAGS"
+          CC="${{ matrix.cc }}" CFLAGS="$MAP_FLAGS" ASFLAGS="$MAP_FLAGS" make go_bindings
+          test -s hashtree.syso
+          mv -f hashtree.syso "${{ matrix.artifact }}"
+          test -s "${{ matrix.artifact }}"
+
+      - name: Run native Go tests
+        if: ${{ matrix.test_mode == 'native' }}
+        shell: bash
+        run: |
+          cd build
+          CGO_ENABLED=0 go test -count=1 .
+
+      - name: Run Linux arm64 Go tests with QEMU
+        if: ${{ matrix.test_mode == 'qemu_arm64' }}
+        shell: bash
+        run: |
+          cd build
+          CGO_ENABLED=1 CC=aarch64-linux-gnu-gcc GOOS=linux GOARCH=arm64 go test -c -o test.arm64 .
+          qemu-aarch64 -L /usr/aarch64-linux-gnu ./test.arm64
+
+      - name: Run Linux RISC-V Go tests with QEMU
+        if: ${{ matrix.test_mode == 'qemu_riscv64' }}
+        shell: bash
+        run: |
+          cd build
+          CGO_ENABLED=1 CC=riscv64-linux-gnu-gcc GOOS=linux GOARCH=riscv64 go test -c -o test.riscv64 .
+          qemu-riscv64 -cpu rv64,zbb=true,zbc=true,zbkb=true,zbkc=true,zbkx=true,zknd=true,zkne=true,zknh=true,zkt=true -L /usr/riscv64-linux-gnu ./test.riscv64
+
+      - name: Audit artifact identity, members, and symbols
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          ARTIFACT: ${{ matrix.artifact }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          platform = os.environ['PLATFORM']
+          artifact_name = os.environ['ARTIFACT']
+          generated = Path('build') / artifact_name
+          official = Path('official-source') / artifact_name
+
+          def run(*args):
+              return subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+          def symbols(path):
+              proc = run('nm', '-g', str(path))
+              if proc.returncode != 0:
+                  raise SystemExit(f'nm failed for {path}: {proc.stderr}')
+              found = set()
+              for match in re.finditer(r'\b_?(hashtree_[A-Za-z0-9_]+)\b', proc.stdout):
+                  found.add(match.group(1))
+              return sorted(found)
+
+          def members(path):
+              proc = run('ar', 't', str(path))
+              if proc.returncode != 0:
+                  raise SystemExit(f'ar failed for {path}: {proc.stderr}')
+              return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+
+          if not generated.is_file() or generated.stat().st_size == 0:
+              raise SystemExit('generated artifact missing')
+          if not official.is_file() or official.stat().st_size == 0:
+              raise SystemExit('official comparison artifact missing')
+
+          data = generated.read_bytes()
+          sila_prefix_count = data.count(b'/sila/hashtree')
+          forbidden = {
+              'github_workspace': os.environ.get('GITHUB_WORKSPACE', '').encode(),
+              'linux_runner': b'/home/runner/work',
+              'mac_runner': b'/Users/runner/work',
+              'windows_runner_backslash': b'D:\\a\\',
+              'windows_runner_slash': b'D:/a/',
+          }
+          forbidden_counts = {
+              key: (data.count(value) if value else 0)
+              for key, value in forbidden.items()
+          }
+          workspace_leak_count = sum(forbidden_counts.values())
+
+          identity_patterns = {
+              'Ethereum': rb'\bEthereum\b',
+              'ethereum': rb'\bethereum\b',
+              'ETHEREUM': rb'\bETHEREUM\b',
+              'EIP': rb'\bEIPs?\b',
+              'eip': rb'\beips?\b',
+              'ERC': rb'\bERCs?\b',
+              'erc': rb'\bercs?\b',
+          }
+          identity_counts = {
+              name: len(re.findall(pattern, data))
+              for name, pattern in identity_patterns.items()
+          }
+          ethereum_identity_total = sum(identity_counts.values())
+
+          generated_members = members(generated)
+          official_members = members(official)
+          generated_symbols = symbols(generated)
+          official_symbols = symbols(official)
+          missing_members = sorted(set(official_members) - set(generated_members))
+          extra_members = sorted(set(generated_members) - set(official_members))
+          missing_symbols = sorted(set(official_symbols) - set(generated_symbols))
+          extra_symbols = sorted(set(generated_symbols) - set(official_symbols))
+
+          required = {'hashtree_hash', 'hashtree_init'}
+          missing_required = sorted(required - set(generated_symbols))
+
+          audit = {
+              'platform': platform,
+              'artifact': artifact_name,
+              'generated_size': generated.stat().st_size,
+              'generated_sha256': hashlib.sha256(data).hexdigest(),
+              'official_sha256': hashlib.sha256(official.read_bytes()).hexdigest(),
+              'sila_prefix_count': sila_prefix_count,
+              'workspace_leak_count': workspace_leak_count,
+              'forbidden_path_counts': forbidden_counts,
+              'ethereum_identity_total': ethereum_identity_total,
+              'ethereum_identity_counts': identity_counts,
+              'generated_member_count': len(generated_members),
+              'official_member_count': len(official_members),
+              'missing_official_members': missing_members,
+              'extra_generated_members': extra_members,
+              'generated_symbol_count': len(generated_symbols),
+              'official_symbol_count': len(official_symbols),
+              'missing_official_symbols': missing_symbols,
+              'extra_generated_symbols': extra_symbols,
+              'missing_required_symbols': missing_required,
+              'manual_generated_file_edit': False,
+              'binary_patch': False,
+          }
+
+          Path('artifact-audit.json').write_text(json.dumps(audit, indent=2) + '\n', encoding='utf-8')
+          print(json.dumps(audit, indent=2))
+
+          failures = []
+          if sila_prefix_count == 0:
+              failures.append('SILA_PREFIX_MISSING')
+          if workspace_leak_count != 0:
+              failures.append('WORKSPACE_PATH_LEAK')
+          if ethereum_identity_total != 0:
+              failures.append('ETHEREUM_IDENTITY_PRESENT')
+          if missing_members:
+              failures.append('OFFICIAL_ARCHIVE_MEMBERS_MISSING')
+          if missing_symbols:
+              failures.append('OFFICIAL_SYMBOLS_MISSING')
+          if missing_required:
+              failures.append('REQUIRED_PUBLIC_SYMBOLS_MISSING')
+          if failures:
+              raise SystemExit(','.join(failures))
+          PY
+
+      - name: Upload generated Sila artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            build/${{ matrix.artifact }}
+            artifact-audit.json
+            source-manifest.tsv
+          if-no-files-found: error
+          retention-days: 7
