@@ -1,4 +1,4 @@
-name: Sila native platform verification
+name: Sila Windows ASFLAGS clean artifact
 
 permissions:
   contents: read
@@ -6,75 +6,22 @@ permissions:
 on:
   push:
     branches:
-      - "sila/ci-hashtree-1.0.2-repacked-20260723_183242"
+      - "sila/ci-hashtree-1.0.2-windows-asflags-20260723_195552"
 
 concurrency:
-  group: sila-native-${{ github.ref }}
+  group: sila-windows-asflags-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   NODE_VERSION: "24.18.0"
   YARN_VERSION: "4.9.2"
   RUST_VERSION: "1.97.1"
-  ZIG_VERSION: "0.16.0"
-  ZIG_X64_URL: "https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz"
-  ZIG_X64_SHA256: "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
-  ZIG_ARM64_URL: "https://ziglang.org/download/0.16.0/zig-aarch64-linux-0.16.0.tar.xz"
-  ZIG_ARM64_SHA256: "ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17"
-  CARGO_ZIGBUILD_VERSION: "0.23.0"
 
 jobs:
-  native-build-test:
-    name: ${{ matrix.target }}
+  windows-asflags-clean:
+    name: x86_64-pc-windows-msvc
     timeout-minutes: 60
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            artifact: hashtree.linux-x64-gnu.node
-            family: linux
-            libc: gnu
-            docker_platform: linux/amd64
-
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            artifact: hashtree.linux-x64-musl.node
-            family: linux
-            libc: musl
-            docker_platform: linux/amd64
-
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            artifact: hashtree.linux-arm64-gnu.node
-            family: linux
-            libc: gnu
-            docker_platform: linux/arm64
-
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-            artifact: hashtree.linux-arm64-musl.node
-            family: linux
-            libc: musl
-            docker_platform: linux/arm64
-
-          - runner: macos-26
-            target: aarch64-apple-darwin
-            artifact: hashtree.darwin-arm64.node
-            family: darwin
-            libc: none
-            docker_platform: none
-
-          - runner: windows-2025
-            target: x86_64-pc-windows-msvc
-            artifact: hashtree.win32-x64-msvc.node
-            family: windows
-            libc: none
-            docker_platform: none
-
-    runs-on: ${{ matrix.runner }}
+    runs-on: windows-2025
 
     steps:
       - name: Checkout exact source
@@ -95,16 +42,17 @@ jobs:
         run: |
           echo "runner_os=$RUNNER_OS"
           echo "runner_arch=$(uname -m)"
-          echo "target=${{ matrix.target }}"
-          echo "artifact=${{ matrix.artifact }}"
+          echo "workspace=$GITHUB_WORKSPACE"
           node --version
           corepack --version
+          rustc --version
+          gcc --version
+          as --version
 
       - name: Setup exact Yarn
         shell: bash
         run: |
           corepack enable
-          corepack yarn --version
           test "$(corepack yarn --version)" = "$YARN_VERSION"
 
       - name: Setup exact Rust
@@ -115,43 +63,10 @@ jobs:
             --profile minimal \
             --component rustfmt \
             --component clippy \
-            --target "${{ matrix.target }}"
+            --target x86_64-pc-windows-msvc
 
           rustc +"$RUST_VERSION" --version
           cargo +"$RUST_VERSION" --version
-
-      - name: Setup latest stable Zig and cargo-zigbuild
-        if: matrix.libc == 'musl'
-        shell: bash
-        run: |
-          case "$(uname -m)" in
-            x86_64|amd64)
-              ZIG_URL="$ZIG_X64_URL"
-              ZIG_SHA256="$ZIG_X64_SHA256"
-              ;;
-            aarch64|arm64)
-              ZIG_URL="$ZIG_ARM64_URL"
-              ZIG_SHA256="$ZIG_ARM64_SHA256"
-              ;;
-            *)
-              echo "unsupported_native_arch=$(uname -m)"
-              false
-              ;;
-          esac
-
-          curl -fsSL "$ZIG_URL" -o zig.tar.xz
-          printf '%s  %s\n' "$ZIG_SHA256" zig.tar.xz |
-            sha256sum -c -
-
-          mkdir -p zig-tool
-          tar -xf zig.tar.xz -C zig-tool --strip-components=1
-
-          echo "$PWD/zig-tool" >> "$GITHUB_PATH"
-
-          cargo +"$RUST_VERSION" install \
-            cargo-zigbuild \
-            --version "=$CARGO_ZIGBUILD_VERSION" \
-            --locked
 
       - name: Immutable dependency install
         shell: bash
@@ -170,26 +85,418 @@ jobs:
           cargo +"$RUST_VERSION" fmt -- --check
           cargo +"$RUST_VERSION" clippy --locked
 
-      - name: Build native artifact
+      - name: Build Windows with clean ASFLAGS
         shell: bash
+        env:
+          TARGET_NAME: x86_64-pc-windows-msvc
+          ARTIFACT_NAME: hashtree.win32-x64-msvc.node
         run: |
-          rm -f "${{ matrix.artifact }}"
+          rm -f "$ARTIFACT_NAME"
+          rm -rf target
 
-          if [ "${{ matrix.libc }}" = "musl" ]; then
-            RUSTUP_TOOLCHAIN="$RUST_VERSION" \
-              corepack yarn build \
-                --target "${{ matrix.target }}" \
-                -x
+          WORKSPACE_NATIVE="$GITHUB_WORKSPACE"
+
+          WORKSPACE_SLASH="$(
+            cygpath -m "$GITHUB_WORKSPACE"
+          )"
+
+          WORKSPACE_POSIX="$(
+            cygpath -u "$GITHUB_WORKSPACE"
+          )"
+
+          WORKSPACE_SLASH_LOWER="$(
+            printf '%s' "$WORKSPACE_SLASH" |
+            tr '[:upper:]' '[:lower:]'
+          )"
+
+          WORKSPACE_POSIX_LOWER="$(
+            printf '%s' "$WORKSPACE_POSIX" |
+            tr '[:upper:]' '[:lower:]'
+          )"
+
+          AUDIT_SCRIPT="$RUNNER_TEMP/audit-native-paths.js"
+
+          cat >"$AUDIT_SCRIPT" <<'NODE'
+          const fs = require("node:fs");
+
+          const [
+            file,
+            report,
+            ...patterns
+          ] = process.argv.slice(2);
+
+          const data = fs.readFileSync(file);
+
+          function findAll(buffer, needle) {
+            if (needle.length === 0) {
+              return [];
+            }
+
+            const indexes = [];
+            let offset = 0;
+
+            while (true) {
+              const index = buffer.indexOf(
+                needle,
+                offset
+              );
+
+              if (index < 0) {
+                return indexes;
+              }
+
+              indexes.push(index);
+              offset = index + needle.length;
+            }
+          }
+
+          const unique = Array.from(
+            new Set(
+              patterns.filter(Boolean)
+            )
+          );
+
+          let total = 0;
+
+          const lines = [
+            `file=${file}`,
+            `size=${data.length}`,
+          ];
+
+          for (const pattern of unique) {
+            for (const encoding of [
+              "utf8",
+              "utf16le",
+            ]) {
+              const needle = Buffer.from(
+                pattern,
+                encoding
+              );
+
+              const indexes = findAll(
+                data,
+                needle
+              );
+
+              total += indexes.length;
+
+              lines.push(
+                `pattern=${pattern}`
+              );
+
+              lines.push(
+                `encoding=${encoding}`
+              );
+
+              lines.push(
+                `hits=${indexes.length}`
+              );
+
+              for (const index of indexes) {
+                const start = Math.max(
+                  0,
+                  index - 96
+                );
+
+                const end = Math.min(
+                  data.length,
+                  index
+                    + needle.length
+                    + 192
+                );
+
+                const context = data
+                  .subarray(start, end)
+                  .toString("latin1")
+                  .replace(
+                    /[^\x20-\x7e]+/g,
+                    "."
+                  );
+
+                lines.push(
+                  `context_offset=${index}`
+                );
+
+                lines.push(
+                  `context=${context}`
+                );
+              }
+            }
+          }
+
+          lines.push(
+            `runner_path_hits=${total}`
+          );
+
+          lines.push(
+            "RUNNER_PATH_AUDIT="
+            + (
+              total === 0
+                ? "PASS"
+                : "FAIL"
+            )
+          );
+
+          fs.writeFileSync(
+            report,
+            lines.join("\n") + "\n",
+            "utf8"
+          );
+
+          console.log(lines.join("\n"));
+          NODE
+
+          COMMON_PREFIX_FLAGS=(
+            "-ffile-prefix-map=$WORKSPACE_SLASH=."
+            "-fdebug-prefix-map=$WORKSPACE_SLASH=."
+            "-fmacro-prefix-map=$WORKSPACE_SLASH=."
+            "-ffile-prefix-map=$WORKSPACE_POSIX=."
+            "-fdebug-prefix-map=$WORKSPACE_POSIX=."
+            "-fmacro-prefix-map=$WORKSPACE_POSIX=."
+            "-ffile-prefix-map=$WORKSPACE_SLASH_LOWER=."
+            "-fdebug-prefix-map=$WORKSPACE_SLASH_LOWER=."
+            "-fmacro-prefix-map=$WORKSPACE_SLASH_LOWER=."
+            "-ffile-prefix-map=$WORKSPACE_POSIX_LOWER=."
+            "-fdebug-prefix-map=$WORKSPACE_POSIX_LOWER=."
+            "-fmacro-prefix-map=$WORKSPACE_POSIX_LOWER=."
+          )
+
+          GNU_AS_PREFIX_FLAGS=(
+            "${COMMON_PREFIX_FLAGS[@]}"
+            "-Wa,--debug-prefix-map=$WORKSPACE_SLASH=."
+            "-Wa,--debug-prefix-map=$WORKSPACE_POSIX=."
+            "-Wa,--debug-prefix-map=$WORKSPACE_SLASH_LOWER=."
+            "-Wa,--debug-prefix-map=$WORKSPACE_POSIX_LOWER=."
+          )
+
+          PROBE_SOURCE="$GITHUB_WORKSPACE/as-prefix-map-probe.S"
+          PROBE_OBJECT="$RUNNER_TEMP/as-prefix-map-probe.o"
+
+          printf '%s\n' \
+            '.section .text' \
+            '.globl sila_as_prefix_probe' \
+            'sila_as_prefix_probe:' \
+            '  nop' \
+            '  ret' \
+            >"$PROBE_SOURCE"
+
+          probe_mode() {
+            MODE_NAME="$1"
+            shift
+
+            MODE_LOG="as-probe-${MODE_NAME}.log"
+            MODE_REPORT="as-probe-${MODE_NAME}-audit.txt"
+
+            rm -f "$PROBE_OBJECT"
+
+            if gcc \
+                "$@" \
+                -g \
+                -fpic \
+                -c \
+                "$PROBE_SOURCE" \
+                -o "$PROBE_OBJECT" \
+                >"$MODE_LOG" \
+                2>&1
+            then
+              PROBE_BUILD_RC=0
+            else
+              PROBE_BUILD_RC=$?
+            fi
+
+            cat "$MODE_LOG"
+
+            echo "probe_mode=$MODE_NAME"
+            echo "probe_build_return_code=$PROBE_BUILD_RC"
+
+            if [ "$PROBE_BUILD_RC" -ne 0 ]; then
+              return "$PROBE_BUILD_RC"
+            fi
+
+            node "$AUDIT_SCRIPT" \
+              "$PROBE_OBJECT" \
+              "$MODE_REPORT" \
+              "$WORKSPACE_NATIVE" \
+              "$WORKSPACE_SLASH" \
+              "$WORKSPACE_POSIX" \
+              "$WORKSPACE_SLASH_LOWER" \
+              "$WORKSPACE_POSIX_LOWER" \
+              "D:/a/" \
+              "d:/a/" \
+              "D:\\a\\" \
+              "d:\\a\\"
+
+            PROBE_HITS="$(
+              sed -n \
+                's/^runner_path_hits=//p' \
+                "$MODE_REPORT" |
+              tail -n 1
+            )"
+
+            echo "probe_runner_path_hits=$PROBE_HITS"
+
+            if [ "$PROBE_HITS" != "0" ]; then
+              return 91
+            fi
+
+            return 0
+          }
+
+          SELECTED_AS_MODE=""
+          SELECTED_AS_FLAGS=()
+
+          if probe_mode \
+              "gcc-prefix-map" \
+              "${COMMON_PREFIX_FLAGS[@]}"
+          then
+            SELECTED_AS_MODE="gcc-prefix-map"
+            SELECTED_AS_FLAGS=(
+              "${COMMON_PREFIX_FLAGS[@]}"
+            )
+          elif probe_mode \
+              "gcc-plus-gnu-as-debug-prefix-map" \
+              "${GNU_AS_PREFIX_FLAGS[@]}"
+          then
+            SELECTED_AS_MODE="gcc-plus-gnu-as-debug-prefix-map"
+            SELECTED_AS_FLAGS=(
+              "${GNU_AS_PREFIX_FLAGS[@]}"
+            )
           else
-            RUSTUP_TOOLCHAIN="$RUST_VERSION" \
-              corepack yarn build \
-                --target "${{ matrix.target }}"
+            echo "assembly_prefix_probe=FAIL"
+            false
           fi
 
-          test -f "${{ matrix.artifact }}"
+          echo "selected_asflags_mode=$SELECTED_AS_MODE"
+
+          CFLAGS_VALUE="$(
+            printf '%s ' \
+              "${COMMON_PREFIX_FLAGS[@]}"
+          )"
+
+          CFLAGS_VALUE="${CFLAGS_VALUE% }"
+
+          ASFLAGS_VALUE="$(
+            printf '%s ' \
+              "${SELECTED_AS_FLAGS[@]}"
+          )"
+
+          ASFLAGS_VALUE="${ASFLAGS_VALUE% }"
+
+          export CFLAGS="$CFLAGS_VALUE"
+          export CXXFLAGS="$CFLAGS_VALUE"
+          export ASFLAGS="$ASFLAGS_VALUE"
+
+          FLAG_SEPARATOR=$'\x1f'
+
+          RUST_FLAGS=(
+            "--remap-path-prefix=$WORKSPACE_NATIVE=."
+            "--remap-path-prefix=$WORKSPACE_SLASH=."
+            "--remap-path-prefix=$WORKSPACE_POSIX=."
+            "--remap-path-prefix=$WORKSPACE_SLASH_LOWER=."
+            "--remap-path-prefix=$WORKSPACE_POSIX_LOWER=."
+          )
+
+          CARGO_ENCODED_RUSTFLAGS=""
+
+          for RUST_FLAG in "${RUST_FLAGS[@]}"
+          do
+            if [ -z "$CARGO_ENCODED_RUSTFLAGS" ]; then
+              CARGO_ENCODED_RUSTFLAGS="$RUST_FLAG"
+            else
+              CARGO_ENCODED_RUSTFLAGS+="$FLAG_SEPARATOR$RUST_FLAG"
+            fi
+          done
+
+          export CARGO_ENCODED_RUSTFLAGS
+          unset RUSTFLAGS
+
+          export CARGO_PROFILE_RELEASE_DEBUG=0
+
+          {
+            echo "target=$TARGET_NAME"
+            echo "workspace_native=$WORKSPACE_NATIVE"
+            echo "workspace_slash=$WORKSPACE_SLASH"
+            echo "workspace_posix=$WORKSPACE_POSIX"
+            echo "workspace_slash_lower=$WORKSPACE_SLASH_LOWER"
+            echo "workspace_posix_lower=$WORKSPACE_POSIX_LOWER"
+            echo "selected_asflags_mode=$SELECTED_AS_MODE"
+            echo "cflags=$CFLAGS"
+            echo "cxxflags=$CXXFLAGS"
+            echo "asflags=$ASFLAGS"
+            printf 'rust_flag=%s\n' \
+              "${RUST_FLAGS[@]}"
+          } >"build-flags-$TARGET_NAME.txt"
+
+          cat "build-flags-$TARGET_NAME.txt"
+
+          if RUSTUP_TOOLCHAIN="$RUST_VERSION" \
+              corepack yarn build \
+                --target "$TARGET_NAME" \
+                2>&1 |
+              tee "build-$TARGET_NAME.log"
+          then
+            BUILD_RC=0
+          else
+            BUILD_RC="${PIPESTATUS[0]}"
+          fi
+
+          echo "build_return_code=$BUILD_RC" |
+            tee -a "build-$TARGET_NAME.log"
+
+          if [ "$BUILD_RC" -ne 0 ]; then
+            false
+          fi
+
+          test -f "$ARTIFACT_NAME"
+
+          node "$AUDIT_SCRIPT" \
+            "$ARTIFACT_NAME" \
+            "path-audit-$TARGET_NAME.txt" \
+            "$WORKSPACE_NATIVE" \
+            "$WORKSPACE_SLASH" \
+            "$WORKSPACE_POSIX" \
+            "$WORKSPACE_SLASH_LOWER" \
+            "$WORKSPACE_POSIX_LOWER" \
+            "/home/runner/work/" \
+            "/Users/runner/work/" \
+            "/users/runner/work/" \
+            "D:/a/" \
+            "d:/a/" \
+            "D:\\a\\" \
+            "d:\\a\\"
+
+          FINAL_PATH_HITS="$(
+            sed -n \
+              's/^runner_path_hits=//p' \
+              "path-audit-$TARGET_NAME.txt" |
+            tail -n 1
+          )"
+
+          echo "final_runner_path_hits=$FINAL_PATH_HITS"
+
+          if [ "$FINAL_PATH_HITS" != "0" ]; then
+            false
+          fi
+
+      - name: Inspect Windows metadata
+        shell: bash
+        env:
+          TARGET_NAME: x86_64-pc-windows-msvc
+          ARTIFACT_NAME: hashtree.win32-x64-msvc.node
+        run: |
+          file "$ARTIFACT_NAME" |
+            tee "windows-file-$TARGET_NAME.txt"
+
+          objdump -x "$ARTIFACT_NAME" \
+            >"windows-objdump-$TARGET_NAME.txt"
+
+          if grep -Eiq \
+            'D:[/\\]a[/\\]|d:[/\\]a[/\\]' \
+            "windows-objdump-$TARGET_NAME.txt"; then
+            false
+          fi
 
       - name: Direct native tests
-        if: matrix.libc != 'musl'
         shell: bash
         run: |
           corepack yarn test
@@ -197,9 +504,6 @@ jobs:
           node <<'NODE'
           const crypto = require("node:crypto");
           const binding = require("./index.js");
-          const keys = Object.keys(binding).sort();
-
-          console.log(`exports=${keys.join(",")}`);
 
           const input = Buffer.alloc(64);
 
@@ -212,107 +516,140 @@ jobs:
             .update(input)
             .digest();
 
-          const actual = Buffer.from(binding.hash(input));
+          const actual = Buffer.from(
+            binding.hash(input)
+          );
+
           const output = Buffer.alloc(32);
 
-          binding.hashInto(input, output);
+          binding.hashInto(
+            input,
+            output
+          );
+
+          const exports = Object
+            .keys(binding)
+            .sort();
+
+          console.log(
+            "binding_exports="
+            + exports.join(",")
+          );
 
           if (
-            !keys.includes("hash") ||
-            !keys.includes("hashInto") ||
-            !actual.equals(expected) ||
-            !output.equals(expected)
+            !exports.includes("hash")
+            || !exports.includes("hashInto")
+            || !actual.equals(expected)
+            || !output.equals(expected)
           ) {
             process.exitCode = 1;
           }
           NODE
 
-      - name: Native musl tests inside Alpine
-        if: matrix.libc == 'musl'
-        shell: bash
-        run: |
-          docker run \
-            --rm \
-            --platform "${{ matrix.docker_platform }}" \
-            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
-            -w "$GITHUB_WORKSPACE" \
-            "node:$NODE_VERSION-alpine" \
-            sh -lc '
-              corepack enable &&
-              corepack yarn install --immutable &&
-              corepack yarn test &&
-              node -e "
-                const crypto = require(\"node:crypto\");
-                const binding = require(\"./index.js\");
-                const keys = Object.keys(binding).sort();
-
-                const input = Buffer.alloc(64);
-
-                for (
-                  let i = 0;
-                  i < input.length;
-                  i += 1
-                ) {
-                  input[i] = i;
-                }
-
-                const expected = crypto
-                  .createHash(\"sha256\")
-                  .update(input)
-                  .digest();
-
-                const actual = Buffer.from(
-                  binding.hash(input)
-                );
-
-                const output = Buffer.alloc(32);
-                binding.hashInto(input, output);
-
-                console.log(
-                  \"exports=\" + keys.join(\",\")
-                );
-
-                if (
-                  !keys.includes(\"hash\") ||
-                  !keys.includes(\"hashInto\") ||
-                  !actual.equals(expected) ||
-                  !output.equals(expected)
-                ) {
-                  process.exitCode = 1;
-                }
-              "
-            '
-
       - name: Artifact proof
         shell: bash
+        env:
+          TARGET_NAME: x86_64-pc-windows-msvc
+          ARTIFACT_NAME: hashtree.win32-x64-msvc.node
         run: |
-          test -f "${{ matrix.artifact }}"
+          TARGET_NAME="$TARGET_NAME" \
+          ARTIFACT_NAME="$ARTIFACT_NAME" \
+          RUST_VERSION="$RUST_VERSION" \
+          node <<'NODE'
+          const crypto = require("node:crypto");
+          const fs = require("node:fs");
+          const child = require("node:child_process");
 
-          {
-            echo "runner_os=$RUNNER_OS"
-            echo "runner_arch=$(uname -m)"
-            echo "runner_name=$RUNNER_NAME"
-            echo "target=${{ matrix.target }}"
-            echo "artifact=${{ matrix.artifact }}"
-            echo "node_version=$(node --version)"
-            echo "yarn_version=$(corepack yarn --version)"
-            echo "rust_version=$(rustc +$RUST_VERSION --version)"
-            echo "zig_version=$ZIG_VERSION"
-            if command -v sha256sum >/dev/null 2>&1; then
-              sha256sum "${{ matrix.artifact }}"
-            else
-              shasum -a 256 "${{ matrix.artifact }}"
-            fi
-          } > "ci-proof-${{ matrix.target }}.txt"
+          const artifact =
+            process.env.ARTIFACT_NAME;
 
-          cat "ci-proof-${{ matrix.target }}.txt"
+          const digest = crypto
+            .createHash("sha256")
+            .update(
+              fs.readFileSync(artifact)
+            )
+            .digest("hex");
 
-      - name: Upload native artifact
+          const values = [
+            `runner_os=${process.env.RUNNER_OS}`,
+            `runner_arch=${
+              child.execFileSync(
+                "uname",
+                ["-m"],
+                {encoding: "utf8"}
+              ).trim()
+            }`,
+            `runner_name=${process.env.RUNNER_NAME}`,
+            `target=${process.env.TARGET_NAME}`,
+            `artifact=${artifact}`,
+            `node_version=${process.version}`,
+            `yarn_version=${
+              child.execFileSync(
+                "corepack",
+                ["yarn", "--version"],
+                {encoding: "utf8"}
+              ).trim()
+            }`,
+            `rust_version=${
+              child.execFileSync(
+                "rustc",
+                [
+                  `+${process.env.RUST_VERSION}`,
+                  "--version",
+                ],
+                {encoding: "utf8"}
+              ).trim()
+            }`,
+            `sha256=${digest}`,
+          ];
+
+          fs.writeFileSync(
+            `ci-proof-${process.env.TARGET_NAME}.txt`,
+            values.join("\n") + "\n",
+            "utf8"
+          );
+
+          console.log(
+            values.join("\n")
+          );
+          NODE
+
+      - name: Final Windows gates
+        shell: bash
+        env:
+          TARGET_NAME: x86_64-pc-windows-msvc
+        run: |
+          cat "path-audit-$TARGET_NAME.txt"
+          cat "build-flags-$TARGET_NAME.txt"
+
+          grep -Fxq \
+            "runner_path_hits=0" \
+            "path-audit-$TARGET_NAME.txt"
+
+          grep -Fxq \
+            "RUNNER_PATH_AUDIT=PASS" \
+            "path-audit-$TARGET_NAME.txt"
+
+          grep -Fq \
+            "selected_asflags_mode=" \
+            "build-flags-$TARGET_NAME.txt"
+
+      - name: Upload Windows artifact and diagnostics
+        if: always()
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: binding-${{ matrix.target }}
+          name: clean-asflags-binding-x86_64-pc-windows-msvc
           path: |
-            ${{ matrix.artifact }}
-            ci-proof-${{ matrix.target }}.txt
-          if-no-files-found: error
+            hashtree.win32-x64-msvc.node
+            ci-proof-x86_64-pc-windows-msvc.txt
+            path-audit-x86_64-pc-windows-msvc.txt
+            build-x86_64-pc-windows-msvc.log
+            build-flags-x86_64-pc-windows-msvc.txt
+            windows-file-x86_64-pc-windows-msvc.txt
+            windows-objdump-x86_64-pc-windows-msvc.txt
+            as-probe-gcc-prefix-map.log
+            as-probe-gcc-prefix-map-audit.txt
+            as-probe-gcc-plus-gnu-as-debug-prefix-map.log
+            as-probe-gcc-plus-gnu-as-debug-prefix-map-audit.txt
+          if-no-files-found: warn
           retention-days: 1
