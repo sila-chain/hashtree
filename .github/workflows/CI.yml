@@ -6,7 +6,7 @@ permissions:
 on:
   push:
     branches:
-      - "sila/ci-hashtree-1.0.2-windows-asflags-20260723_195552"
+      - "sila/ci-hashtree-1.0.2-windows-proof-trigger-20260723_202646"
 
 concurrency:
   group: sila-windows-asflags-${{ github.ref }}
