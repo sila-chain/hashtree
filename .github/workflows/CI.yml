@@ -552,67 +552,55 @@ jobs:
           TARGET_NAME: x86_64-pc-windows-msvc
           ARTIFACT_NAME: hashtree.win32-x64-msvc.node
         run: |
-          TARGET_NAME="$TARGET_NAME" \
-          ARTIFACT_NAME="$ARTIFACT_NAME" \
-          RUST_VERSION="$RUST_VERSION" \
-          node <<'NODE'
-          const crypto = require("node:crypto");
-          const fs = require("node:fs");
-          const child = require("node:child_process");
+          NODE_VERSION_ACTUAL="$(
+            node --version
+          )"
 
-          const artifact =
-            process.env.ARTIFACT_NAME;
+          YARN_VERSION_ACTUAL="$(
+            corepack yarn --version
+          )"
 
-          const digest = crypto
-            .createHash("sha256")
-            .update(
-              fs.readFileSync(artifact)
-            )
-            .digest("hex");
+          RUST_VERSION_ACTUAL="$(
+            rustc +"$RUST_VERSION" --version
+          )"
 
-          const values = [
-            `runner_os=${process.env.RUNNER_OS}`,
-            `runner_arch=${
-              child.execFileSync(
-                "uname",
-                ["-m"],
-                {encoding: "utf8"}
-              ).trim()
-            }`,
-            `runner_name=${process.env.RUNNER_NAME}`,
-            `target=${process.env.TARGET_NAME}`,
-            `artifact=${artifact}`,
-            `node_version=${process.version}`,
-            `yarn_version=${
-              child.execFileSync(
-                "corepack",
-                ["yarn", "--version"],
-                {encoding: "utf8"}
-              ).trim()
-            }`,
-            `rust_version=${
-              child.execFileSync(
-                "rustc",
-                [
-                  `+${process.env.RUST_VERSION}`,
-                  "--version",
-                ],
-                {encoding: "utf8"}
-              ).trim()
-            }`,
-            `sha256=${digest}`,
-          ];
+          SHA256_ACTUAL="$(
+            sha256sum "$ARTIFACT_NAME" |
+            awk '{print $1}'
+          )"
 
-          fs.writeFileSync(
-            `ci-proof-${process.env.TARGET_NAME}.txt`,
-            values.join("\n") + "\n",
-            "utf8"
-          );
+          {
+            echo "runner_os=$RUNNER_OS"
+            echo "runner_arch=$(uname -m)"
+            echo "runner_name=$RUNNER_NAME"
+            echo "target=$TARGET_NAME"
+            echo "artifact=$ARTIFACT_NAME"
+            echo "node_version=$NODE_VERSION_ACTUAL"
+            echo "yarn_version=$YARN_VERSION_ACTUAL"
+            echo "rust_version=$RUST_VERSION_ACTUAL"
+            echo "sha256=$SHA256_ACTUAL"
+          } >"ci-proof-$TARGET_NAME.txt"
 
-          console.log(
-            values.join("\n")
-          );
-          NODE
+          cat "ci-proof-$TARGET_NAME.txt"
+
+          test "$NODE_VERSION_ACTUAL" = \
+            "v$NODE_VERSION"
+
+          test "$YARN_VERSION_ACTUAL" = \
+            "$YARN_VERSION"
+
+          printf '%s\n' \
+            "$RUST_VERSION_ACTUAL" |
+          grep -Fq \
+            "rustc $RUST_VERSION"
+
+          test -n "$SHA256_ACTUAL"
+
+          test "$(
+            printf '%s' "$SHA256_ACTUAL" |
+            wc -c |
+            tr -d ' '
+          )" = "64"
 
       - name: Final Windows gates
         shell: bash
