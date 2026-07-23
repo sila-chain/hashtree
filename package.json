@@ -29,8 +29,14 @@
   "main": "index.js",
   "types": "index.d.ts",
   "files": [
+    "index.js",
     "index.d.ts",
-    "index.js"
+    "hashtree.linux-x64-gnu.node",
+    "hashtree.linux-x64-musl.node",
+    "hashtree.linux-arm64-gnu.node",
+    "hashtree.linux-arm64-musl.node",
+    "hashtree.darwin-arm64.node",
+    "hashtree.win32-x64-msvc.node"
   ],
   "keywords": [
     "hash",
